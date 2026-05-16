@@ -33,18 +33,7 @@ VEYN_URL = os.getenv("VEYN_URL", "http://localhost:7700")
 VEYN_TOKEN = os.getenv("VEYN_TOKEN")
 QALLOW_URL = os.getenv("QALLOW_URL", "http://localhost:5000")
 
-mcp = FastMCP(
-    "CGX-QV",
-    description=(
-        "CGX-QV cognitive runtime MCP server. Exposes two subsystems as tools and resources:\n"
-        "• VEYN — normalizes biometric/sensor signals (BLE, EEG, HealthKit, MQTT) into a "
-        "unified event stream with intent detection and context synthesis.\n"
-        "• Qallow — multi-phase reasoning engine with evolutionary swarm agents and the "
-        "ASIOS self-optimization kernel that tunes its own parameters across sessions.\n"
-        "Compatible with any MCP-capable host (Claude Desktop, Cursor, Zed, Continue, "
-        "VS Code, custom agents)."
-    ),
-)
+mcp = FastMCP("CGX-QV")
 
 # ---------------------------------------------------------------------------
 # Transport helpers

@@ -15,7 +15,7 @@ use axum::{
 use governor::{
     clock::DefaultClock,
     middleware::NoOpMiddleware,
-    state::{InMemoryState, keyed::DefaultKeyedStateStore},
+    state::keyed::DefaultKeyedStateStore,
     Quota, RateLimiter,
 };
 use tower_http::cors::{AllowHeaders, AllowMethods, AllowOrigin, CorsLayer};

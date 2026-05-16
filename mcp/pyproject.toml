@@ -1,6 +1,6 @@
 [build-system]
 requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.backends.legacy:build"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "cgx-qv-mcp"
@@ -20,8 +20,11 @@ dev = ["pytest", "pytest-asyncio"]
 [project.scripts]
 cgx-qv-mcp = "server:main"
 
+[tool.uv]
+link-mode = "copy"
+
 [tool.uv.sources]
 veyn-sdk = { path = "../CGX_VEYN/sdk/python", editable = true }
 
-[tool.setuptools.packages.find]
-where = ["."]
+[tool.setuptools]
+py-modules = ["server"]

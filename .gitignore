@@ -10,3 +10,13 @@ __pycache__/
 venv/
 *.jsonl
 veyn-events.jsonl
+
+# Python packaging build artifacts & caches
+*.egg-info/
+.eggs/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.uv_cache/

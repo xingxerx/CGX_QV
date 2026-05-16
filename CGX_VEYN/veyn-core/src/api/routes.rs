@@ -1,3 +1,4 @@
+use axum::response::sse::{Event, KeepAlive};
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
@@ -8,7 +9,6 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use axum::response::sse::{Event, KeepAlive};
 use prometheus_client::encoding::text::encode;
 use serde::Deserialize;
 use serde_json::json;
@@ -17,7 +17,7 @@ use std::sync::atomic::Ordering;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::time::{interval, Duration};
 use tokio_stream::wrappers::BroadcastStream;
-use tokio_stream::StreamExt as _;
+use tokio_stream::{Stream, StreamExt as _};
 use tracing::warn;
 use veyn_schemas::{ContextSnapshot, StateDelta, VeynEvent, VeynNotification};
 
@@ -276,10 +276,10 @@ async fn handle_socket(
     let mut rx = state.broadcast_tx.subscribe();
 
     let passes_filter = |event: &VeynEvent| -> bool {
-        let ok_metric = metric_filter.is_empty()
-            || metric_filter.iter().any(|m| m == &event.metric);
-        let ok_source = source_filter.is_empty()
-            || source_filter.iter().any(|s| s == &event.source);
+        let ok_metric =
+            metric_filter.is_empty() || metric_filter.iter().any(|m| m == &event.metric);
+        let ok_source =
+            source_filter.is_empty() || source_filter.iter().any(|s| s == &event.source);
         ok_metric && ok_source
     };
 
@@ -389,21 +389,20 @@ async fn gestures_recent(State(state): State<AppState>) -> Json<serde_json::Valu
 // ── GET /v1/metrics/prometheus ────────────────────────────────────────────────
 
 async fn prometheus_metrics(State(state): State<AppState>) -> Response {
-    let mut body: Vec<u8> = Vec::new();
+    let mut body = String::new();
     {
         let registry = state.prometheus_registry.lock().unwrap();
         if encode(&mut body, &registry).is_err() {
             return (StatusCode::INTERNAL_SERVER_ERROR, "encode error").into_response();
         }
     }
-    let text = match String::from_utf8(body) {
-        Ok(s) => s,
-        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "utf8 error").into_response(),
-    };
     (
         StatusCode::OK,
-        [(header::CONTENT_TYPE, "text/plain; version=0.0.4; charset=utf-8")],
-        text,
+        [(
+            header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
+        body,
     )
         .into_response()
 }
@@ -445,24 +444,23 @@ async fn sse_stream(
         .collect();
 
     let rx = state.broadcast_tx.subscribe();
-    let stream = BroadcastStream::new(rx)
-        .filter_map(move |result| {
-            let mf = metric_filter.clone();
-            let sf = source_filter.clone();
-            match result {
-                Ok(event) => {
-                    let pass_metric = mf.is_empty() || mf.iter().any(|m| m == &event.metric);
-                    let pass_source = sf.is_empty() || sf.iter().any(|s| s == &event.source);
-                    if pass_metric && pass_source {
-                        if let Ok(data) = serde_json::to_string(&event) {
-                            return Some(Ok(Event::default().data(data)));
-                        }
+    let stream = BroadcastStream::new(rx).filter_map(move |result| {
+        let mf = metric_filter.clone();
+        let sf = source_filter.clone();
+        match result {
+            Ok(event) => {
+                let pass_metric = mf.is_empty() || mf.iter().any(|m| m == &event.metric);
+                let pass_source = sf.is_empty() || sf.iter().any(|s| s == &event.source);
+                if pass_metric && pass_source {
+                    if let Ok(data) = serde_json::to_string(&event) {
+                        return Some(Ok(Event::default().data(data)));
                     }
-                    None
                 }
-                Err(_) => None,
+                None
             }
-        });
+            Err(_) => None,
+        }
+    });
 
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
@@ -471,6 +469,7 @@ async fn sse_stream(
 
 /// Query params for subscribe filtering on the WebSocket stream.
 #[derive(Deserialize, Default)]
+#[allow(dead_code)]
 struct WsParams {
     /// Bearer token (alternative to Authorization header).
     #[serde(default)]
@@ -487,6 +486,7 @@ struct WsParams {
 
 /// JSON body / query params for context subscription.
 #[derive(Deserialize, Default)]
+#[allow(dead_code)]
 struct SubscribeParams {
     /// Intent labels to match (empty = all).
     #[serde(default)]

@@ -47,33 +47,10 @@ services:
     depends_on:
       veyn:
         condition: service_healthy
-    command: >
-      sh -c "
-        pip install httpx --quiet &&
-        python -c \"
-import httpx, time, json
-
-token = open('/data/veyn/token').read().strip()
-base  = 'http://veyn:7700'
-hdrs  = {'Authorization': f'Bearer {token}'}
-
-print('=== VEYN Consumer Agent ===')
-health = httpx.get(f'{base}/health', headers=hdrs).json()
-print('daemon version:', health['version'])
-print('uptime_s:', health['uptime_s'])
-
-print('\\nStreaming context (Ctrl+C to stop)...')
-params = {'token': token, 'min_confidence': '0.5'}
-with httpx.Client(timeout=None) as c:
-    with c.stream('GET', f'{base}/v1/context/subscribe', params=params) as r:
-        for line in r.iter_lines():
-            if line.startswith('data:'):
-                snap = json.loads(line[5:])
-                print(f'[{snap[\\\"timestamp_ms\\\"]}] {snap[\\\"intent\\\"]} ({snap[\\\"confidence\\\"]:.2f})')
-        \"
-      "
+    command: sh -c "pip install httpx --quiet && python /app/consumer.py"
     volumes:
       - ./data:/data:ro
+      - ./consumer.py:/app/consumer.py:ro
     networks:
       - veyn-net
 
