@@ -1,4 +1,4 @@
-# CGX_QVO Monorepo
+# CGX_QV Monorepo
 
 Personal biometric intelligence stack — wearable data ingestion and cognitive AGI runtime, unified into a single Rust workspace.
 
@@ -36,7 +36,7 @@ VEYN is the data spine. Qallow consumes its WebSocket stream to gate its cogniti
 ## Workspace
 
 ```
-CGX_QVO/
+CGX_QV/
 ├── Cargo.toml                        # unified workspace root
 ├── CGX_VEYN/
 │   ├── veyn-core/                    # daemon binary + API server
