@@ -1,309 +1,194 @@
-#![allow(dead_code)]
-
 mod backend;
-mod button_handlers;
-mod clipboard;
-mod codebase_manager;
-mod config;
-mod control_commands;
-mod dungeons;
-mod error_recovery;
-mod gpu;
-mod logging;
-mod messaging;
 mod models;
-mod shortcuts;
-mod shutdown;
-mod telemetry;
-mod ui;
-mod utils;
 
-use backend::process_manager::ProcessManager;
-use button_handlers::ButtonHandler;
-use codebase_manager::CodebaseManager;
-use config::{AppConfig, ConfigManager};
-use fltk::enums::Color;
-use fltk::{app, button, prelude::*};
-use models::AppState;
-use std::sync::{Arc, Mutex};
-use tokio::runtime::Runtime;
-use crate::{
-    logging::AppLogger,
-    messaging::UiMessage,
-    shutdown::ShutdownManager,
+use backend::api_client::ApiClient;
+use fltk::{
+    app, button, enums::Color, enums::Font, enums::FrameType, frame, group, input, prelude::*, text, window,
 };
-use std::env;
-use std::io;
-use std::path::Path;
-use std::process::{Command, Stdio};
+use std::sync::Arc;
+use tokio::runtime::Runtime;
 
-#[cfg(unix)]
-use std::os::unix::net::UnixStream;
-
-enum VmStatus {
-    Running,
-    Paused,
-    Stopped,
+#[derive(Clone, Debug)]
+enum UiMsg {
+    UpdateMetrics(serde_json::Value),
+    UpdateLogs(Vec<serde_json::Value>),
+    ChatReply(String),
+    ChatError(String),
+    StatusMsg(String),
 }
 
 fn main() {
-    let rt = Runtime::new().unwrap();
-    let _enter = rt.enter();
-    env_logger::init();
+    let rt = Arc::new(Runtime::new().unwrap());
+    let client = Arc::new(ApiClient::default());
 
-    // Initialize configuration
-    let config_mgr = ConfigManager::new("qallow_config.json".to_string());
-    let config = config_mgr.get().clone();
-
-    // Initialize logger
-    let logger = AppLogger::new(
-        config.logging.file_path.clone(),
-        config.logging.max_file_size_mb,
-        config.logging.max_backups,
-    );
-    let _ = logger.init();
-    let _ = logger.info("🚀 Qallow Application Starting");
-
-    // Initialize GPU acceleration
-    let gpu_capability = gpu::check_gpu_availability();
-    let _ = logger.info(&format!("GPU Capability: {}", gpu_capability));
-
-    let _gpu_manager = match gpu::GPUManager::new() {
-        Ok(mgr) => {
-            let metrics = mgr.get_metrics();
-            let _ = logger.info(&format!(
-                "✓ GPU Initialized: {} (Compute {}.{})",
-                metrics.device_name, metrics.compute_capability.0, metrics.compute_capability.1
-            ));
-            Some(Arc::new(mgr))
-        }
-        Err(e) => {
-            let _ = logger.warn(&format!("GPU initialization failed: {}", e));
-            None
-        }
-    };
-
-    // Initialize codebase manager
-    let codebase_mgr = match CodebaseManager::new("/root/Qallow", logger.clone()) {
-        Ok(mgr) => {
-            let _ = logger.info("✓ Codebase manager initialized");
-            Some(Arc::new(mgr))
-        }
-        Err(e) => {
-            let _ = logger.warn(&format!("Could not initialize codebase manager: {}", e));
-            None
-        }
-    };
-
-    // Initialize shutdown manager
-    let shutdown_mgr = ShutdownManager::new("qallow_state.json".to_string());
-    ShutdownManager::init_signal_handlers();
-
-    // Load previous state if available
-    let initial_state = match shutdown_mgr.load_state() {
-        Ok(state) => {
-            let _ = logger.info("✓ Previous state loaded successfully");
-            state
-        }
-        Err(e) => {
-            let _ = logger.warn(&format!("Could not load previous state: {}", e));
-            models::AppState::new()
-        }
-    };
-
-    // Initialize FLTK
     let app = app::App::default();
-    // UI message channel for background tasks
-    let (sender, receiver) = app::channel::<UiMessage>();
+    let (s, r) = app::channel::<UiMsg>();
 
-    // Don't apply theme - let individual widget colors show through
-    // The theme was overriding our modern neon colors
-    // let theme = fltk_theme::WidgetTheme::new(ThemeType::Dark);
-    // theme.apply();
+    let mut wind = window::Window::default()
+        .with_size(1000, 700)
+        .with_label("Qallow Unified AGI Orchestrator");
+    wind.set_color(Color::from_hex(0x111318));
 
-    // Create application state
-    let state = Arc::new(Mutex::new(initial_state));
+    // Top status and controls
+    let mut header = frame::Frame::new(20, 20, 960, 40, "QALLOW RUNTIME: UNIFIED 4-PHASE LOOP");
+    header.set_label_font(Font::HelveticaBold);
+    header.set_label_size(20);
+    header.set_label_color(Color::from_hex(0x00ffaa));
+    header.set_frame(FrameType::RFlatBox);
+    header.set_color(Color::from_hex(0x1a1e28));
 
-    // Create process manager
-    let process_manager = Arc::new(Mutex::new(ProcessManager::new()));
+    // Phase control buttons
+    let mut controls_group = group::Group::new(20, 80, 960, 60, "");
+    controls_group.set_frame(FrameType::RFlatBox);
+    controls_group.set_color(Color::from_hex(0x1a1e28));
 
-    // Create button handler
-    let button_handler = Arc::new(ButtonHandler::new(
-        state.clone(),
-        process_manager.clone(),
-        Arc::new(logger.clone()),
-        codebase_mgr.clone(),
-        Some(sender.clone()),
-    ));
-
-    // --- Main Window and UI Setup ---
-    let mut main_win = ui::main_window::MainWindow::new(button_handler.clone());
-
-    for i in 0..4 {
-        let phase = models::Phase::from_index(i).unwrap();
-        main_win.control_panel.buttons.phase_buttons[i].set_callback({
-            let handler = main_win.button_handler.clone();
-            move |_| {
-                if let Err(e) = handler.on_run_phase(phase) {
-                    println!("Error running phase: {}", e);
+    let phases = [("Phase 1: Elasticity", 1), ("Phase 2: Harmonic", 2), ("Phase 3: Coherence", 3), ("Phase 4: Convergence", 4)];
+    for (i, (label, phase_num)) in phases.iter().enumerate() {
+        let mut btn = button::Button::new(40 + (i as i32 * 180), 92, 160, 36, *label);
+        btn.set_color(Color::from_hex(0x282f40));
+        btn.set_label_color(Color::from_hex(0x88ddff));
+        btn.set_frame(FrameType::RFlatBox);
+        
+        let c = client.clone();
+        let s_clone = s.clone();
+        let rt_clone = rt.clone();
+        let p = *phase_num;
+        btn.set_callback(move |_| {
+            let c = c.clone();
+            let s = s_clone.clone();
+            rt_clone.spawn(async move {
+                if let Ok(_) = c.start_phase(p, 500).await {
+                    s.send(UiMsg::StatusMsg(format!("Running Phase {}", p)));
                 }
-            }
+            });
         });
     }
 
-    main_win.control_panel.buttons.unified_button.set_callback({
-        let handler = main_win.button_handler.clone();
-        move |_| {
-            if let Err(e) = handler.on_run_phase(models::Phase::Unified) {
-                println!("Error running unified: {}", e);
+    let mut stop_btn = button::Button::new(780, 92, 160, 36, "Stop Phase");
+    stop_btn.set_color(Color::from_hex(0xff5555));
+    stop_btn.set_label_color(Color::White);
+    stop_btn.set_frame(FrameType::RFlatBox);
+    let c = client.clone();
+    let s_clone = s.clone();
+    let rt_clone = rt.clone();
+    stop_btn.set_callback(move |_| {
+        let c = c.clone();
+        let s = s_clone.clone();
+        rt_clone.spawn(async move {
+            if let Ok(_) = c.stop_phase().await {
+                s.send(UiMsg::StatusMsg("Phase Stopped".to_string()));
+            }
+        });
+    });
+    controls_group.end();
+
+    // Biometrics and Metrics display
+    let mut metrics_box = text::TextDisplay::new(20, 160, 460, 240, "Live Biometrics & Kernel State");
+    metrics_box.set_color(Color::from_hex(0x1a1e28));
+    metrics_box.set_text_color(Color::from_hex(0x00ffcc));
+    metrics_box.set_text_font(Font::Courier);
+    let mut metrics_buf = text::TextBuffer::default();
+    metrics_buf.set_text("Waiting for VEYN stream metrics...\n");
+    metrics_box.set_buffer(metrics_buf.clone());
+
+    // Audit logs display
+    let mut logs_box = text::TextDisplay::new(500, 160, 480, 240, "System Audit Logs");
+    logs_box.set_color(Color::from_hex(0x1a1e28));
+    logs_box.set_text_color(Color::from_hex(0xffff88));
+    logs_box.set_text_font(Font::Courier);
+    let mut logs_buf = text::TextBuffer::default();
+    logs_buf.set_text("System audit trail ready.\n");
+    logs_box.set_buffer(logs_buf.clone());
+
+    // Reasoning Engine Chat
+    let mut chat_disp = text::TextDisplay::new(20, 420, 960, 200, "Sovereign AGI Interaction (Gemma 4)");
+    chat_disp.set_color(Color::from_hex(0x1a1e28));
+    chat_disp.set_text_color(Color::White);
+    chat_disp.set_text_font(Font::Helvetica);
+    let mut chat_buf = text::TextBuffer::default();
+    chat_buf.set_text("Gemma 4 initialized with physiological context prefixing.\n");
+    chat_disp.set_buffer(chat_buf.clone());
+
+    let mut chat_input = input::Input::new(20, 630, 800, 40, "");
+    chat_input.set_color(Color::from_hex(0x282f40));
+    chat_input.set_text_color(Color::White);
+
+    let mut send_btn = button::Button::new(830, 630, 150, 40, "Send / Reason");
+    send_btn.set_color(Color::from_hex(0x0055ff));
+    send_btn.set_label_color(Color::White);
+    send_btn.set_frame(FrameType::RFlatBox);
+
+    let c = client.clone();
+    let s_clone = s.clone();
+    let rt_clone = rt.clone();
+    let mut input_clone = chat_input.clone();
+    let mut c_buf_clone = chat_buf.clone();
+    send_btn.set_callback(move |_| {
+        let msg = input_clone.value();
+        if msg.trim().is_empty() { return; }
+        input_clone.set_value("");
+        c_buf_clone.append(&format!("\nOperator: {}\nReasoning...", msg));
+        
+        let c = c.clone();
+        let s = s_clone.clone();
+        rt_clone.spawn(async move {
+            match c.chat(&msg).await {
+                Ok(reply) => s.send(UiMsg::ChatReply(reply)),
+                Err(e) => s.send(UiMsg::ChatError(e.to_string())),
+            }
+        });
+    });
+
+    wind.end();
+    wind.show();
+
+    // Spawn background metrics poller
+    let c = client.clone();
+    let s_clone = s.clone();
+    let rt_clone = rt.clone();
+    rt_clone.spawn(async move {
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(500));
+        loop {
+            interval.tick().await;
+            if let Ok(m) = c.get_metrics().await {
+                s_clone.send(UiMsg::UpdateMetrics(m));
+            }
+            if let Ok(l) = c.get_audit_logs().await {
+                s_clone.send(UiMsg::UpdateLogs(l));
             }
         }
     });
 
-    main_win.wind.show();
-
-    // --- Main Application Loop ---
-    let logger_clone = logger.clone();
-
-    // Use the standard FLTK event loop.
-    // `app.wait()` will block here until the window is closed.
     while app.wait() {
-        // Handle messages from background threads
-        if let Some(msg) = receiver.recv() {
+        if let Some(msg) = r.recv() {
             match msg {
-                _ => {}
-            }
-        }
-
-        // Update UI elements that need periodic refresh
-        if let Ok(mut state_guard) = state.lock() {
-            state_guard.update_uptime();
-        }
-
-        // Check for global shutdown signal
-        if shutdown::SHUTDOWN_FLAG.load(std::sync::atomic::Ordering::SeqCst) {
-            let _ = logger_clone.info("⚠ Shutdown signal received, saving state...");
-            if let Ok(state_guard) = state.lock() {
-                 if let Err(e) = shutdown_mgr.save_state(&state_guard) {
-                    let _ = logger_clone.error(&format!("Failed to save state: {}", e));
+                UiMsg::UpdateMetrics(val) => {
+                    if let Ok(pretty) = serde_json::to_string_pretty(&val) {
+                        metrics_buf.set_text(&pretty);
+                    }
                 }
-            }
-            let _ = shutdown_mgr.cleanup();
-            app.quit();
-        }
-    }
-
-    let _ = logger.info("✓ Application exiting gracefully");
-
-    // Explicitly drop the runtime to wait for background tasks.
-    drop(rt);
-}
-
-// This function is kept as a placeholder for future CLI implementation.
-fn run_cli_interface(
-    _app_state: Arc<Mutex<AppState>>,
-    _logger: AppLogger,
-    _shutdown_mgr: ShutdownManager,
-) -> Result<(), io::Error> {
-    println!("CLI mode is not yet fully implemented.");
-    Ok(())
-}
-
-/// Updates the color and label of the VM status button.
-fn update_vm_status_indicator(button: &mut button::Button, status: VmStatus) {
-    match status {
-        VmStatus::Running => {
-            button.set_label("● Running");
-            button.set_color(Color::from_hex(0x00ff64));
-            button.set_label_color(Color::Black);
-        }
-        VmStatus::Paused => {
-            button.set_label("● Paused");
-            button.set_color(Color::from_hex(0xffaa00));
-            button.set_label_color(Color::Black);
-        }
-        VmStatus::Stopped => {
-            button.set_label("● Stopped");
-            button.set_color(Color::from_hex(0xff6464));
-            button.set_label_color(Color::White);
-        }
-    }
-    button.redraw();
-}
-
-fn display_available() -> bool {
-    #[cfg(any(target_os = "windows", target_os = "macos"))]
-    {
-        true
-    }
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-    {
-        if let Ok(display) = env::var("DISPLAY") {
-            if display.starts_with(':') {
-                let socket = display
-                    .trim_start_matches(':')
-                    .split('.')
-                    .next()
-                    .unwrap_or("0");
-                let socket_path = format!("/tmp/.X11-unix/X{}", socket);
-                if Path::new(&socket_path).exists() {
-                    return UnixStream::connect(socket_path).is_ok();
+                UiMsg::UpdateLogs(logs) => {
+                    let mut s = String::new();
+                    for log in logs.iter().rev().take(15) {
+                        if let Some(action) = log.get("action").and_then(|v| v.as_str()) {
+                            let detail = log.get("detail").and_then(|v| v.as_str()).unwrap_or("");
+                            s.push_str(&format!("• [{}]: {}\n", action, detail));
+                        }
+                    }
+                    if !s.is_empty() {
+                        logs_buf.set_text(&s);
+                    }
                 }
-            } else if display.starts_with("unix:") {
-                let socket = display
-                    .trim_start_matches("unix:")
-                    .split('.')
-                    .next()
-                    .unwrap_or("0");
-                let socket_path = format!("/tmp/.X11-unix/X{}", socket);
-                if Path::new(&socket_path).exists() {
-                    return UnixStream::connect(socket_path).is_ok();
+                UiMsg::ChatReply(reply) => {
+                    chat_buf.append(&format!("\nQallow: {}\n", reply));
+                }
+                UiMsg::ChatError(err) => {
+                    chat_buf.append(&format!("\n[Error reasoning]: {}\n", err));
+                }
+                UiMsg::StatusMsg(status) => {
+                    header.set_label(&format!("QALLOW RUNTIME: {}", status.to_uppercase()));
                 }
             }
         }
-        if env::var("WAYLAND_DISPLAY").is_ok() {
-            return true;
-        }
-        false
     }
-}
-
-fn run_headless(config: &AppConfig, logger: &AppLogger) -> Result<(), String> {
-    let mut command = Command::new("./build/qallow");
-    command.arg("run");
-
-    let phase_lower = config.vm.default_phase.to_lowercase();
-    if phase_lower == "phase2" || phase_lower == "2" {
-        command.arg("--phase=2");
-        command.arg(format!("--ticks={}", config.vm.default_ticks));
-    } else if phase_lower == "phase4" || phase_lower == "4" {
-        command.arg("--phase=4");
-        command.arg(format!("--ticks={}", config.vm.default_ticks));
-    } else if phase_lower == "phase3" || phase_lower == "3" || phase_lower == "unified" {
-        command.arg("unified");
-    } else {
-        command.arg("unified");
-        let _ = logger.warn(&format!(
-            "Unknown default phase '{}'; defaulting to unified pipeline",
-            config.vm.default_phase
-        ));
-    }
-
-    if config.vm.default_build.eq_ignore_ascii_case("cuda") {
-        command.env("QALLOW_PREFERRED_BUILD", "CUDA");
-    }
-
-    command.stdout(Stdio::inherit()).stderr(Stdio::inherit());
-    let debug_cmd = format!("{:?}", command);
-    let _ = logger.info(&format!("▶ Running headless pipeline via {}", debug_cmd));
-
-    let status = command
-        .status()
-        .map_err(|e| format!("Failed to launch CLI run: {}", e))?;
-
-    if !status.success() {
-        return Err(format!("CLI run exited with status: {}", status));
-    }
-
-    Ok(())
 }

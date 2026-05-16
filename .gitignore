@@ -2,3 +2,9 @@
 **/target/
 **/*.rs.bk
 Cargo.lock
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
