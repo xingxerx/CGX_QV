@@ -93,5 +93,5 @@ cargo run -p qallow-native --release
 
 ## License
 
-- **CGX_VEYN** — MIT © CGX / XINGXERX
+- **CGX_VEYN** — Elastic License 2.0 (ELv2) © XINGXERX / CGX
 - **Qallow** — MIT
