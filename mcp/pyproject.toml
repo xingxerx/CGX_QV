@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "cgx-qv-mcp"
+version = "0.1.0"
+description = "MCP server exposing CGX-QV (VEYN + Qallow) as Claude tools"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+dependencies = [
+    "mcp[cli]>=1.0.0",
+    "httpx>=0.27",
+    "veyn-sdk",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-asyncio"]
+
+[project.scripts]
+cgx-qv-mcp = "server:main"
+
+[tool.uv.sources]
+veyn-sdk = { path = "../CGX_VEYN/sdk/python", editable = true }
+
+[tool.setuptools.packages.find]
+where = ["."]
