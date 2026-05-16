@@ -1,0 +1,421 @@
+openapi: "3.0.3"
+info:
+  title: VEYN API
+  version: "0.1.0"
+  description: |
+    VEYN daemon — sensory nervous system for software.
+    Normalises data from BLE, EEG/OSC, HealthKit, MQTT and WASM plugins into a
+    unified context stream consumable by AI agents and dashboards.
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:7700
+    description: Local VEYN daemon
+
+security:
+  - bearerAuth: []
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: |
+        Token from `~/.local/share/veyn/token`.
+        For WebSocket/SSE, pass as `?token=<value>` query parameter.
+
+  schemas:
+    VeynEvent:
+      type: object
+      required: [metric, value, unit, ts, device_id, source]
+      properties:
+        metric:    { type: string,  example: heart_rate }
+        value:     { type: number,  example: 72.0 }
+        unit:      { type: string,  example: bpm }
+        ts:        { type: integer, format: int64, description: Unix timestamp in ms }
+        device_id: { type: string,  example: apple-watch-0 }
+        source:    { type: string,  example: healthkit }
+
+    ContextSnapshot:
+      type: object
+      required: [timestamp_ms, session_id, intent, confidence, active_devices, state_deltas]
+      properties:
+        timestamp_ms:   { type: integer, format: int64 }
+        session_id:     { type: string }
+        intent:         { type: string,  example: "user in calm/resting state" }
+        confidence:     { type: number,  minimum: 0.0, maximum: 1.0 }
+        active_devices: { type: array, items: { type: string } }
+        state_deltas:   { type: array, items: { $ref: '#/components/schemas/StateDelta' } }
+
+    StateDelta:
+      type: object
+      required: [device_id, metric, value, unit, ts]
+      properties:
+        device_id: { type: string }
+        metric:    { type: string }
+        value:     { type: number }
+        unit:      { type: string }
+        ts:        { type: integer, format: int64 }
+
+    HealthResponse:
+      type: object
+      properties:
+        status:            { type: string, enum: [ok] }
+        version:           { type: string }
+        uptime_s:          { type: integer }
+        session_id:        { type: string }
+        events_total:      { type: integer }
+        events_raw:        { type: integer }
+        event_rate_hz:     { type: integer }
+        compression_ratio: { type: number }
+        connected_devices: { type: integer }
+
+    DeviceInfo:
+      type: object
+      properties:
+        id:        { type: string }
+        name:      { type: string }
+        source:    { type: string }
+        state:     { type: string, enum: [Connected, Disconnected, Unknown] }
+        last_seen: { type: integer, format: int64 }
+
+    PluginInfo:
+      type: object
+      properties:
+        name:        { type: string }
+        version:     { type: string }
+        description: { type: string }
+
+    PresenceInfo:
+      type: object
+      properties:
+        device_id: { type: string }
+        present:   { type: boolean }
+        last_seen: { type: integer, format: int64 }
+
+    NotifyRequest:
+      type: object
+      required: [title, body]
+      properties:
+        title:         { type: string }
+        body:          { type: string }
+        target_device: { type: string }
+
+    Error:
+      type: object
+      properties:
+        error: { type: string }
+
+paths:
+  /health:
+    get:
+      operationId: getHealth
+      summary: Liveness check (public — no auth required)
+      security: []
+      tags: [system]
+      responses:
+        '200':
+          description: Daemon is alive
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HealthResponse' }
+
+  /v1/health:
+    get:
+      operationId: getHealthV1
+      summary: Liveness check — versioned (public)
+      security: []
+      tags: [system]
+      responses:
+        '200':
+          description: Daemon is alive
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HealthResponse' }
+
+  /v1/events/recent:
+    get:
+      operationId: getRecentEvents
+      summary: Last ~1000 filtered events from the ring buffer
+      tags: [events]
+      responses:
+        '200':
+          description: Event list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  events: { type: array, items: { $ref: '#/components/schemas/VeynEvent' } }
+                  count:  { type: integer }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /v1/metrics/{metric}:
+    get:
+      operationId: getMetric
+      summary: Latest value for a specific metric
+      tags: [events]
+      parameters:
+        - name: metric
+          in: path
+          required: true
+          schema: { type: string }
+          example: heart_rate
+      responses:
+        '200':
+          description: Metric value
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/VeynEvent' }
+        '404':
+          description: Metric not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /v1/metrics/prometheus:
+    get:
+      operationId: getPrometheusMetrics
+      summary: Prometheus text exposition (for Grafana / scraping)
+      tags: [system]
+      responses:
+        '200':
+          description: Prometheus text format metrics
+          content:
+            text/plain:
+              schema: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /v1/devices:
+    get:
+      operationId: listDevices
+      summary: List all connected and recently seen devices
+      tags: [devices]
+      responses:
+        '200':
+          description: Device list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  devices: { type: array, items: { $ref: '#/components/schemas/DeviceInfo' } }
+                  count:   { type: integer }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /v1/plugins:
+    get:
+      operationId: listPlugins
+      summary: List loaded WASM plugins
+      tags: [plugins]
+      responses:
+        '200':
+          description: Plugin list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  plugins: { type: array, items: { $ref: '#/components/schemas/PluginInfo' } }
+                  count:   { type: integer }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /v1/presence:
+    get:
+      operationId: getPresence
+      summary: Device presence state
+      tags: [devices]
+      responses:
+        '200':
+          description: Presence info
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  presence: { type: array, items: { $ref: '#/components/schemas/PresenceInfo' } }
+                  count:    { type: integer }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /v1/context/current:
+    get:
+      operationId: getContextCurrent
+      summary: Current synthesised context snapshot (intent + state deltas)
+      tags: [context]
+      responses:
+        '200':
+          description: Current context
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ContextSnapshot' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /v1/context/history:
+    get:
+      operationId: getContextHistory
+      summary: Historical context snapshots
+      tags: [context]
+      parameters:
+        - name: n
+          in: query
+          description: Number of snapshots to return (default 10)
+          schema: { type: integer, default: 10 }
+      responses:
+        '200':
+          description: History
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  history: { type: array, items: { $ref: '#/components/schemas/ContextSnapshot' } }
+                  count:   { type: integer }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /v1/context/subscribe:
+    get:
+      operationId: subscribeContext
+      summary: |
+        SSE stream of context snapshots filtered by declarative DSL.
+        Connect with `Accept: text/event-stream`.
+      tags: [context, streaming]
+      parameters:
+        - name: intents
+          in: query
+          description: Comma-separated intent substrings to match (empty = all)
+          schema: { type: string, example: "calm,idle" }
+        - name: min_confidence
+          in: query
+          description: Minimum confidence score (0.0–1.0)
+          schema: { type: number, default: 0.0 }
+        - name: tier
+          in: query
+          description: "Context tier: raw | filtered | semantic"
+          schema: { type: string, enum: [raw, filtered, semantic], default: filtered }
+        - name: token
+          in: query
+          description: Bearer token (alternative to Authorization header)
+          schema: { type: string }
+      responses:
+        '200':
+          description: SSE stream of context events
+          content:
+            text/event-stream:
+              schema: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /v1/stream:
+    get:
+      operationId: streamWebSocket
+      summary: WebSocket stream of filtered VeynEvents
+      tags: [streaming]
+      parameters:
+        - name: token
+          in: query
+          description: Bearer token (required for WebSocket)
+          schema: { type: string }
+        - name: metrics
+          in: query
+          description: Comma-separated metric names to include (empty = all)
+          schema: { type: string, example: "heart_rate,hrv" }
+        - name: sources
+          in: query
+          description: Comma-separated source names to include (empty = all)
+          schema: { type: string, example: "healthkit,ble" }
+      responses:
+        '101':
+          description: WebSocket upgrade (streams VeynEvent JSON objects)
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /v1/stream/sse:
+    get:
+      operationId: streamSse
+      summary: SSE alternative to WebSocket stream (simpler HTTP clients)
+      tags: [streaming]
+      parameters:
+        - name: token
+          in: query
+          schema: { type: string }
+        - name: metrics
+          in: query
+          description: Comma-separated metric names to include (empty = all)
+          schema: { type: string }
+        - name: sources
+          in: query
+          description: Comma-separated source names to include (empty = all)
+          schema: { type: string }
+      responses:
+        '200':
+          description: SSE stream of VeynEvent data lines
+          content:
+            text/event-stream:
+              schema: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /v1/notify:
+    post:
+      operationId: postNotify
+      summary: Send a notification to a connected device (HealthKit)
+      tags: [devices]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NotifyRequest' }
+      responses:
+        '202':
+          description: Notification queued
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:     { type: string }
+                  status: { type: string, enum: [queued] }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: Token scope does not allow writes
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /v1/gestures/recent:
+    get:
+      operationId: getRecentGestures
+      summary: Recent companion gesture events
+      tags: [events]
+      responses:
+        '200':
+          description: Gesture list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  gestures: { type: array, items: { $ref: '#/components/schemas/VeynEvent' } }
+                  count:    { type: integer }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  components:
+    responses:
+      Unauthorized:
+        description: Missing or invalid bearer token
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Error' }
+
+tags:
+  - name: system
+    description: Daemon health and observability
+  - name: events
+    description: Raw event access
+  - name: devices
+    description: Device management and presence
+  - name: plugins
+    description: WASM plugin management
+  - name: context
+    description: Synthesised cognitive context
+  - name: streaming
+    description: Real-time event streaming (WebSocket / SSE)

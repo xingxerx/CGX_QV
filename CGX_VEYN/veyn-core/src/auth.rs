@@ -9,10 +9,71 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Json, Response},
 };
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tracing::{info, warn};
 
 use crate::api::state::AppState;
+
+// ── Scoped tokens ─────────────────────────────────────────────────────────────
+
+/// Permission scope attached to a token.
+/// Tokens are stored as `<hex>:<scope>` in the token file;
+/// bare hex tokens are treated as `Full` for backward compatibility.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TokenScope {
+    /// Full access to all endpoints and event classes.
+    #[default]
+    Full,
+    /// Read-only: no POST /notify, no admin routes.
+    ReadOnly,
+    /// Only MIDI/OSC events; no raw HID data.
+    MidiOnly,
+}
+
+impl TokenScope {
+    fn from_str(s: &str) -> Self {
+        match s {
+            "read_only" => TokenScope::ReadOnly,
+            "midi_only" => TokenScope::MidiOnly,
+            _ => TokenScope::Full,
+        }
+    }
+
+    pub fn allows_write(&self) -> bool {
+        matches!(self, TokenScope::Full)
+    }
+
+    pub fn allows_hid(&self) -> bool {
+        matches!(self, TokenScope::Full)
+    }
+}
+
+/// A token paired with its scope.
+#[derive(Debug, Clone)]
+pub struct ScopedToken {
+    pub secret: String,
+    pub scope: TokenScope,
+}
+
+impl ScopedToken {
+    /// Parse `<hex>[:<scope>]` from stored token file content.
+    pub fn parse(raw: &str) -> Self {
+        let raw = raw.trim();
+        if let Some((secret, scope_str)) = raw.split_once(':') {
+            ScopedToken {
+                secret: secret.to_owned(),
+                scope: TokenScope::from_str(scope_str),
+            }
+        } else {
+            ScopedToken {
+                secret: raw.to_owned(),
+                scope: TokenScope::Full,
+            }
+        }
+    }
+}
 
 // ── Token path ────────────────────────────────────────────────────────────────
 
@@ -160,6 +221,7 @@ fn verify_file_ownership(_path: &Path) -> Result<()> {
 /// Bypassed when `require_auth = false` in config (dev/--no-auth mode).
 /// `/health` and `/v1/health` are always public for operator liveness checks.
 /// For WebSocket upgrades the token may be supplied as `?token=<value>`.
+/// Scope enforcement: `ReadOnly` tokens are rejected on mutating methods (POST/PUT/DELETE).
 pub async fn require_bearer(State(state): State<AppState>, req: Request, next: Next) -> Response {
     if !state.config.require_auth {
         return next.run(req).await;
@@ -170,30 +232,37 @@ pub async fn require_bearer(State(state): State<AppState>, req: Request, next: N
         return next.run(req).await;
     }
 
-    let expected = state.auth_token.as_str();
     let provided = extract_token(&req);
 
-    if provided.as_deref() == Some(expected) {
-        return next.run(req).await;
+    // Find matching scoped token.
+    let matched = state.scoped_tokens.iter().find(|t| {
+        provided.as_deref() == Some(t.secret.as_str())
+    }).cloned();
+
+    let Some(token) = matched else {
+        let path = path.to_owned();
+        let reason = if provided.is_none() { "missing" } else { "invalid" };
+        warn!(path = %path, reason, "auth failure");
+        append_audit_log(
+            state.config.audit_log_path.as_deref(),
+            &format!("auth_failure reason={reason} path={path}"),
+        );
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": "unauthorized" })),
+        ).into_response();
+    };
+
+    // Scope check: read-only tokens cannot call mutating routes.
+    if !token.scope.allows_write() && req.method() == axum::http::Method::POST {
+        warn!(path = %path, scope = ?token.scope, "scope violation: write attempt with read-only token");
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "forbidden", "reason": "token scope does not allow writes" })),
+        ).into_response();
     }
 
-    let path = path.to_owned();
-    let reason = if provided.is_none() {
-        "missing"
-    } else {
-        "invalid"
-    };
-    warn!(path = %path, reason, "auth failure");
-    append_audit_log(
-        state.config.audit_log_path.as_deref(),
-        &format!("auth_failure reason={reason} path={path}"),
-    );
-
-    (
-        StatusCode::UNAUTHORIZED,
-        Json(json!({ "error": "unauthorized" })),
-    )
-        .into_response()
+    next.run(req).await
 }
 
 fn extract_token(req: &Request) -> Option<String> {

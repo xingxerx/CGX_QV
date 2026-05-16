@@ -4,6 +4,18 @@ use std::path::Path;
 use anyhow::Result;
 use serde::Deserialize;
 
+/// Access tier granted to an authenticated client.
+/// `Raw` = all events unfiltered; `Filtered` = epsilon/debounce compressed;
+/// `Semantic` = intent-synthesised snapshots only.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ContextTier {
+    Raw,
+    #[default]
+    Filtered,
+    Semantic,
+}
+
 // ── TOML file schema ──────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize, Default)]
@@ -39,6 +51,8 @@ struct TomlSecurity {
     cors_origins: Option<Vec<String>>,
     audit_log_path: Option<String>,
     strip_raw_hid: Option<bool>,
+    rate_limit_per_second: Option<u32>,
+    default_context_tier: Option<ContextTier>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -99,6 +113,10 @@ pub struct Config {
     pub cors_origins: Vec<String>,
     pub audit_log_path: Option<String>,
     pub strip_raw_hid: bool,
+    /// Max REST requests per second per client IP (None = unlimited).
+    pub rate_limit_per_second: Option<u32>,
+    /// Default context tier for authenticated clients.
+    pub default_context_tier: ContextTier,
     pub rules_path: String,
     pub context_history_size: usize,
     pub debounce_ms: HashMap<String, u64>,
@@ -124,6 +142,8 @@ impl Default for Config {
             cors_origins: vec![],
             audit_log_path: None,
             strip_raw_hid: true,
+            rate_limit_per_second: Some(100),
+            default_context_tier: ContextTier::Filtered,
             rules_path: "rules.toml".to_string(),
             context_history_size: 32,
             debounce_ms: default_debounce_ms(),
@@ -190,6 +210,12 @@ pub fn load(toml_path: Option<&str>, cli_port: Option<u16>, cli_no_auth: bool) -
     }
     if let Some(v) = file.security.strip_raw_hid {
         cfg.strip_raw_hid = v;
+    }
+    if let Some(v) = file.security.rate_limit_per_second {
+        cfg.rate_limit_per_second = Some(v);
+    }
+    if let Some(v) = file.security.default_context_tier {
+        cfg.default_context_tier = v;
     }
     if let Some(v) = file.adapters.mock {
         cfg.mock_mode = v;

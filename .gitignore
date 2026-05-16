@@ -8,3 +8,5 @@ __pycache__/
 *.pyd
 .venv/
 venv/
+*.jsonl
+veyn-events.jsonl

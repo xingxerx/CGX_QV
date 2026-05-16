@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "veyn-sdk"
+version = "0.1.0"
+description = "Python SDK for the VEYN daemon (sensory nervous system for software)"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+dependencies = [
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-asyncio", "respx"]
+
+[project.urls]
+Repository = "https://github.com/xingxerx/CGX_QV"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["veyn_sdk*"]

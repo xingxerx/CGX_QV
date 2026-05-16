@@ -1,0 +1,117 @@
+version: "3.9"
+
+# VEYN local development stack.
+# Usage:
+#   docker compose up          — start daemon + example consumer
+#   docker compose up veyn     — daemon only
+#   docker compose logs -f     — stream logs
+#
+# The daemon token is written to ./data/veyn/token on first start.
+# Grafana (optional) scrapes the Prometheus endpoint at /v1/metrics/prometheus.
+
+services:
+
+  # ── VEYN daemon ─────────────────────────────────────────────────────────────
+  veyn:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: veyn-daemon
+    restart: unless-stopped
+    ports:
+      - "7700:7700"     # REST + WebSocket API
+      - "7701:7701"     # HealthKit TCP relay
+    environment:
+      VEYN_PORT: "7700"
+      VEYN_HK_PORT: "7701"
+      VEYN_MOCK: "true"          # enable mock data generator (safe default)
+      VEYN_LOG: "/data/veyn-events.jsonl"
+      VEYN_NO_AUTH: "false"
+    volumes:
+      - ./data:/data                   # token + audit log + JSONL events
+      - ./rules.toml:/app/rules.toml:ro
+      - ./plugins:/app/plugins:ro
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:7700/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    networks:
+      - veyn-net
+
+  # ── Example consumer agent ──────────────────────────────────────────────────
+  consumer:
+    image: python:3.12-slim
+    container_name: veyn-consumer
+    depends_on:
+      veyn:
+        condition: service_healthy
+    command: >
+      sh -c "
+        pip install httpx --quiet &&
+        python -c \"
+import httpx, time, json
+
+token = open('/data/veyn/token').read().strip()
+base  = 'http://veyn:7700'
+hdrs  = {'Authorization': f'Bearer {token}'}
+
+print('=== VEYN Consumer Agent ===')
+health = httpx.get(f'{base}/health', headers=hdrs).json()
+print('daemon version:', health['version'])
+print('uptime_s:', health['uptime_s'])
+
+print('\\nStreaming context (Ctrl+C to stop)...')
+params = {'token': token, 'min_confidence': '0.5'}
+with httpx.Client(timeout=None) as c:
+    with c.stream('GET', f'{base}/v1/context/subscribe', params=params) as r:
+        for line in r.iter_lines():
+            if line.startswith('data:'):
+                snap = json.loads(line[5:])
+                print(f'[{snap[\\\"timestamp_ms\\\"]}] {snap[\\\"intent\\\"]} ({snap[\\\"confidence\\\"]:.2f})')
+        \"
+      "
+    volumes:
+      - ./data:/data:ro
+    networks:
+      - veyn-net
+
+  # ── Prometheus (optional) ────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: veyn-prometheus
+    profiles: ["observability"]
+    volumes:
+      - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    depends_on:
+      veyn:
+        condition: service_healthy
+    networks:
+      - veyn-net
+
+  # ── Grafana (optional) ────────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:10.4.0
+    container_name: veyn-grafana
+    profiles: ["observability"]
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: "veyn"
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+    volumes:
+      - grafana-data:/var/lib/grafana
+    networks:
+      - veyn-net
+
+networks:
+  veyn-net:
+    driver: bridge
+
+volumes:
+  grafana-data:

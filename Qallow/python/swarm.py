@@ -2,13 +2,13 @@
 Qallow Swarm Engine
 
 Each "offspring" is a diverged cognitive instance with perturbed ethics weights.
-The engine spawns a generation, evaluates each member's fitness against live
-biometric metrics, selects the survivor with highest fitness, and feeds its
-weights back into the parent SwarmProfile.
+The engine spawns a generation, evaluates each member's fitness against the
+current cognitive state, selects the survivor with highest fitness, and feeds
+its weights back into the parent SwarmProfile.
 
 Fitness function: ethics_coherence × reward_signal × (1 - risk)
 The product rewards instances that maintain ethical alignment while achieving
-high reward under low-risk physiological conditions.
+high reward under low-risk cognitive conditions.
 """
 
 import random
@@ -78,12 +78,12 @@ def spawn(parent: SwarmState, n: int, divergence_factor: float, genesis_step: in
 
 def evaluate(child: OffspringProfile, metrics: dict) -> float:
     """
-    Compute fitness for one offspring given live biometric metrics.
+    Compute fitness for one offspring given the current cognitive state metrics.
 
-    metrics expected keys (all floats, 0.0–1.0 range unless noted):
-      energy      — HRV-derived energy level
-      risk        — EEG beta-derived risk/arousal (lower is better)
-      reward_mod  — SPO2-derived reward modulation
+    metrics expected keys (all floats, 0.0–1.0 range):
+      energy       — internal energy level (may be sourced from VEYN or internal state)
+      risk         — risk/arousal level (lower is better)
+      reward_mod   — reward modulation signal
       ethics_score — composite ethics gate (safety × clarity × human blend)
 
     Fitness = ethics_coherence × reward_signal × calm_factor

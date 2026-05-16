@@ -56,6 +56,7 @@ impl ApiClient {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub async fn export_metrics(&self, format: &str) -> Result<String, String> {
         let res = self.client
             .get(&format!("{}/export?format={}", self.base_url, format))

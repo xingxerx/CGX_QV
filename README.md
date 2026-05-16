@@ -1,6 +1,6 @@
 # CGX_QV Monorepo
 
-Personal biometric intelligence stack — wearable data ingestion and cognitive AGI runtime, unified into a single Rust workspace.
+Cognitive AGI runtime and unified signal processing stack — a multi-phase reasoning engine with optional real-time sensor integration, built in a single Rust workspace.
 
 ---
 
@@ -8,28 +8,28 @@ Personal biometric intelligence stack — wearable data ingestion and cognitive 
 
 | Directory | Crate(s) | Purpose |
 |---|---|---|
-| [`CGX_VEYN/`](CGX_VEYN/) | `veyn-core`, `veyn-adapters`, `veyn-schemas`, `veyn-plugins` | Local biometric bridge daemon — reads wearables, normalizes data, exposes REST/WebSocket API |
-| [`Qallow/`](Qallow/) | `qallow-native`, `qallow-veyn-bridge` | Cognitive AGI runtime — biometric-gated reasoning loop driven by live VEYN telemetry |
+| [`CGX_VEYN/`](CGX_VEYN/) | `veyn-core`, `veyn-adapters`, `veyn-schemas`, `veyn-plugins` | Signal bridge daemon — normalizes data from connected devices and external APIs, exposes REST/WebSocket API |
+| [`Qallow/`](Qallow/) | `qallow-native`, `qallow-veyn-bridge` | Cognitive AGI runtime — multi-phase reasoning loop with optional live VEYN telemetry integration |
 
 ---
 
 ## How They Connect
 
 ```
-Muse S / BLE Wearables / Garmin / Whoop
+Sensors / APIs / Wearables / Custom Sources
               │
               ▼
         VEYN Daemon  (localhost:7700)
         REST + WebSocket
-              │
+              │  (optional)
               ▼
            Qallow
         AGI runtime
-        (biometric-
-        gated phases)
+        (multi-phase
+        reasoning)
 ```
 
-VEYN is the data spine. Qallow consumes its WebSocket stream to gate its cognitive phases on biometric thresholds (HRV, EEG beta, SpO₂).
+VEYN is an optional data source. When connected, Qallow ingests its WebSocket stream to enrich its internal cognitive state (energy, risk, reward modulation). Qallow runs fully without VEYN using its internal state defaults.
 
 ---
 
@@ -45,7 +45,7 @@ CGX_QV/
 │   └── veyn-plugins/                 # WASM plugin host
 └── Qallow/
     ├── native_app/                   # FLTK desktop orchestrator
-    ├── core/qallow-veyn-bridge/      # WebSocket → LMDB biometric bridge
+    ├── core/qallow-veyn-bridge/      # WebSocket → LMDB signal bridge (optional)
     ├── src/                          # C cognitive engine (memory graph, phases 1–4)
     └── python/                       # Ollama reasoning layer
 ```

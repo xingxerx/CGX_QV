@@ -3,16 +3,21 @@ use axum::{
         ws::{Message, WebSocket, WebSocketUpgrade},
         Path, Query, State,
     },
-    http::StatusCode,
-    response::{Html, IntoResponse, Json},
+    http::{header, StatusCode},
+    response::{Html, IntoResponse, Json, Response, Sse},
     routing::{get, post},
     Router,
 };
+use axum::response::sse::{Event, KeepAlive};
+use prometheus_client::encoding::text::encode;
 use serde::Deserialize;
 use serde_json::json;
+use std::convert::Infallible;
 use std::sync::atomic::Ordering;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::time::{interval, Duration};
+use tokio_stream::wrappers::BroadcastStream;
+use tokio_stream::StreamExt as _;
 use tracing::warn;
 use veyn_schemas::{ContextSnapshot, StateDelta, VeynEvent, VeynNotification};
 
@@ -39,14 +44,17 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/health", get(health))
         .route("/v1/events/recent", get(events_recent))
         .route("/v1/metrics/:metric", get(metrics_get))
+        .route("/v1/metrics/prometheus", get(prometheus_metrics))
         .route("/v1/devices", get(devices_list))
         .route("/v1/plugins", get(plugins_list))
         .route("/v1/stream", get(ws_stream))
+        .route("/v1/stream/sse", get(sse_stream))
         .route("/v1/notify", post(notify_post))
         .route("/v1/presence", get(presence_get))
         .route("/v1/gestures/recent", get(gestures_recent))
         .route("/v1/context/current", get(context_current))
-        .route("/v1/context/history", get(context_history));
+        .route("/v1/context/history", get(context_history))
+        .route("/v1/context/subscribe", get(context_subscribe));
 
     legacy.merge(v1).with_state(state)
 }
@@ -233,19 +241,55 @@ fn synthesize_intent_builtin(state: &std::collections::HashMap<String, f64>) -> 
 
 // ── GET /stream  (WebSocket) ──────────────────────────────────────────────────
 
-async fn ws_stream(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_socket(socket, state))
+async fn ws_stream(
+    ws: WebSocketUpgrade,
+    State(state): State<AppState>,
+    Query(params): Query<WsParams>,
+) -> impl IntoResponse {
+    let metric_filter: Vec<String> = params
+        .metrics
+        .as_deref()
+        .unwrap_or("")
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+        .collect();
+    let source_filter: Vec<String> = params
+        .sources
+        .as_deref()
+        .unwrap_or("")
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+        .collect();
+    ws.on_upgrade(move |socket| handle_socket(socket, state, metric_filter, source_filter))
 }
 
-async fn handle_socket(mut socket: WebSocket, state: AppState) {
+async fn handle_socket(
+    mut socket: WebSocket,
+    state: AppState,
+    metric_filter: Vec<String>,
+    source_filter: Vec<String>,
+) {
     let mut rx = state.broadcast_tx.subscribe();
 
-    // Replay ring buffer to newly connected client.
+    let passes_filter = |event: &VeynEvent| -> bool {
+        let ok_metric = metric_filter.is_empty()
+            || metric_filter.iter().any(|m| m == &event.metric);
+        let ok_source = source_filter.is_empty()
+            || source_filter.iter().any(|s| s == &event.source);
+        ok_metric && ok_source
+    };
+
+    // Replay ring buffer to newly connected client (filtered).
     let replay: Vec<VeynEvent> = state
         .recent_events
         .lock()
         .unwrap()
         .iter()
+        .filter(|e| passes_filter(e))
         .cloned()
         .collect();
 
@@ -267,6 +311,9 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
             result = rx.recv() => {
                 match result {
                     Ok(event) => {
+                        if !passes_filter(&event) {
+                            continue;
+                        }
                         let json = match serde_json::to_string(&event) {
                             Ok(j) => j,
                             Err(_) => continue,
@@ -337,4 +384,159 @@ async fn gestures_recent(State(state): State<AppState>) -> Json<serde_json::Valu
         .collect();
     let count = gestures.len();
     Json(json!({ "gestures": gestures, "count": count }))
+}
+
+// ── GET /v1/metrics/prometheus ────────────────────────────────────────────────
+
+async fn prometheus_metrics(State(state): State<AppState>) -> Response {
+    let mut body: Vec<u8> = Vec::new();
+    {
+        let registry = state.prometheus_registry.lock().unwrap();
+        if encode(&mut body, &registry).is_err() {
+            return (StatusCode::INTERNAL_SERVER_ERROR, "encode error").into_response();
+        }
+    }
+    let text = match String::from_utf8(body) {
+        Ok(s) => s,
+        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "utf8 error").into_response(),
+    };
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "text/plain; version=0.0.4; charset=utf-8")],
+        text,
+    )
+        .into_response()
+}
+
+// ── GET /v1/stream/sse  (Server-Sent Events) ──────────────────────────────────
+
+#[derive(Deserialize, Default)]
+struct SseParams {
+    /// Comma-separated metric names to include (empty = all).
+    #[serde(default)]
+    metrics: Option<String>,
+    /// Comma-separated source names to include (empty = all).
+    #[serde(default)]
+    sources: Option<String>,
+}
+
+async fn sse_stream(
+    State(state): State<AppState>,
+    Query(params): Query<SseParams>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let metric_filter: Vec<String> = params
+        .metrics
+        .as_deref()
+        .unwrap_or("")
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+        .collect();
+
+    let source_filter: Vec<String> = params
+        .sources
+        .as_deref()
+        .unwrap_or("")
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+        .collect();
+
+    let rx = state.broadcast_tx.subscribe();
+    let stream = BroadcastStream::new(rx)
+        .filter_map(move |result| {
+            let mf = metric_filter.clone();
+            let sf = source_filter.clone();
+            match result {
+                Ok(event) => {
+                    let pass_metric = mf.is_empty() || mf.iter().any(|m| m == &event.metric);
+                    let pass_source = sf.is_empty() || sf.iter().any(|s| s == &event.source);
+                    if pass_metric && pass_source {
+                        if let Ok(data) = serde_json::to_string(&event) {
+                            return Some(Ok(Event::default().data(data)));
+                        }
+                    }
+                    None
+                }
+                Err(_) => None,
+            }
+        });
+
+    Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+// ── GET /v1/stream  (WebSocket) with subscribe filtering ─────────────────────
+
+/// Query params for subscribe filtering on the WebSocket stream.
+#[derive(Deserialize, Default)]
+struct WsParams {
+    /// Bearer token (alternative to Authorization header).
+    #[serde(default)]
+    token: Option<String>,
+    /// Comma-separated metric names to include (empty = all).
+    #[serde(default)]
+    metrics: Option<String>,
+    /// Comma-separated source names to include (empty = all).
+    #[serde(default)]
+    sources: Option<String>,
+}
+
+// ── GET /v1/context/subscribe  (declarative filter DSL) ──────────────────────
+
+/// JSON body / query params for context subscription.
+#[derive(Deserialize, Default)]
+struct SubscribeParams {
+    /// Intent labels to match (empty = all).
+    #[serde(default)]
+    intents: Option<String>,
+    /// Minimum confidence threshold (0.0–1.0).
+    #[serde(default)]
+    min_confidence: Option<f64>,
+    /// Context tier: "raw" | "filtered" | "semantic".
+    #[serde(default)]
+    tier: Option<String>,
+}
+
+async fn context_subscribe(
+    State(state): State<AppState>,
+    Query(params): Query<SubscribeParams>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let intent_filter: Vec<String> = params
+        .intents
+        .as_deref()
+        .unwrap_or("")
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+        .collect();
+    let min_confidence = params.min_confidence.unwrap_or(0.0);
+
+    // For context/subscribe we build synthetic snapshots from the broadcast stream.
+    let rx = state.broadcast_tx.subscribe();
+    let state_clone = state.clone();
+    let stream = BroadcastStream::new(rx).filter_map(move |result| {
+        let state_inner = state_clone.clone();
+        let if_ = intent_filter.clone();
+        match result {
+            Ok(_event) => {
+                // On every event, emit a fresh context snapshot if it passes filters.
+                let snap = build_snapshot_from_metrics(&state_inner);
+                let pass_intent =
+                    if_.is_empty() || if_.iter().any(|i| snap.intent.contains(i.as_str()));
+                let pass_confidence = snap.confidence >= min_confidence;
+                if pass_intent && pass_confidence {
+                    if let Ok(data) = serde_json::to_string(&snap) {
+                        return Some(Ok(Event::default().event("context").data(data)));
+                    }
+                }
+                None
+            }
+            Err(_) => None,
+        }
+    });
+
+    Sse::new(stream).keep_alive(KeepAlive::default())
 }

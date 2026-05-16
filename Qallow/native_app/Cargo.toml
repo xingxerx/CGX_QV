@@ -7,7 +7,7 @@ description = "Native desktop application for Qallow Quantum-Photonic AGI System
 license = "MIT"
 
 [dependencies]
-fltk = { version = "1.4", features = ["fltk-bundled", "enable-glwindow"] }
+fltk = { version = "~1.4", features = [] }
 fltk-theme = "0.7"
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }

@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
@@ -271,22 +273,19 @@ impl AppState {
         self.terminal_output.clear();
     }
 
-    /// Evaluates whether the unified loop should advance to the next phase based on physiological and ethical gates.
+    /// Evaluates whether the unified loop should advance to the next phase.
     pub fn can_advance_phase(&self) -> bool {
-        // Physiologically-gated unified loop logic
-        let hrv_threshold = 0.6; // Example threshold
-        let ethics_floor = 0.92; // The CANON's kappa floor
-        
-        // Assert HRV (mapped to energy), Beta coherence (mapped to risk), and ethics score
-        let hrv_ok = self.energy > hrv_threshold;
-        let beta_ok = self.risk < 0.8; // Lower risk means better coherence
+        let energy_threshold = 0.6;
+        let ethics_floor = 0.92; // CANON kappa floor
+
+        let energy_ok = self.energy > energy_threshold;
+        let risk_ok = self.risk < 0.8;
         let ethics_ok = self.metrics.ethics_score.safety > ethics_floor
             && self.metrics.ethics_score.clarity > ethics_floor
             && self.metrics.ethics_score.human > ethics_floor;
-        
         let fidelity_ok = self.metrics.coherence >= self.phase_config.target_fidelity;
 
-        hrv_ok && beta_ok && ethics_ok && fidelity_ok
+        energy_ok && risk_ok && ethics_ok && fidelity_ok
     }
 }
 

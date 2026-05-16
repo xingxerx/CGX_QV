@@ -43,7 +43,6 @@ impl VeynBridge {
                 if let Ok(event) = serde_json::from_str::<VeynEvent>(msg.to_text()?) {
                     println!("Received VEYN event: {:?}", event);
                     
-                    // Map metrics to ql_state fields
                     let (key, val) = match event.metric.as_str() {
                         "hrv" => ("energy", event.value),
                         "eeg_beta" => ("risk", event.value),

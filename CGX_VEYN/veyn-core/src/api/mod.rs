@@ -1,18 +1,66 @@
 pub mod routes;
 pub mod state;
 
+use std::net::IpAddr;
+use std::num::NonZeroU32;
+use std::sync::Arc;
+
 use anyhow::Result;
 use axum::{
-    extract::{Request, State},
+    extract::{ConnectInfo, Request, State},
     http::{HeaderValue, Method, StatusCode},
     middleware::{self, Next},
-    response::Response,
+    response::{IntoResponse, Response},
+};
+use governor::{
+    clock::DefaultClock,
+    middleware::NoOpMiddleware,
+    state::{InMemoryState, keyed::DefaultKeyedStateStore},
+    Quota, RateLimiter,
 };
 use tower_http::cors::{AllowHeaders, AllowMethods, AllowOrigin, CorsLayer};
 use tracing::info;
 
 use self::state::AppState;
 use crate::auth;
+
+// ── Rate limiter type alias ───────────────────────────────────────────────────
+
+type KeyedLimiter =
+    RateLimiter<IpAddr, DefaultKeyedStateStore<IpAddr>, DefaultClock, NoOpMiddleware>;
+
+/// Per-IP rate limiter stored in AppState (lazily initialised if configured).
+#[derive(Clone)]
+pub struct RateLimitState(pub Arc<KeyedLimiter>);
+
+// ── Rate limiting middleware ──────────────────────────────────────────────────
+
+/// Reject requests that exceed the per-IP quota configured in `rate_limit_per_second`.
+/// Health endpoint is exempted so liveness probes are never throttled.
+pub async fn rate_limit(
+    State(limiter): State<Arc<Option<RateLimitState>>>,
+    ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
+    req: Request,
+    next: Next,
+) -> Response {
+    let path = req.uri().path();
+    if path == "/health" || path == "/v1/health" {
+        return next.run(req).await;
+    }
+    if let Some(rl) = limiter.as_ref() {
+        if rl.0.check_key(&addr.ip()).is_err() {
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                axum::Json(serde_json::json!({
+                    "error": "rate limit exceeded",
+                    "retry_after_s": 1
+                })),
+            )
+                .into_response();
+        }
+    }
+    next.run(req).await
+}
 
 pub async fn serve(
     state: AppState,
@@ -21,13 +69,24 @@ pub async fn serve(
 ) -> Result<()> {
     let cors = build_cors(&state.config.cors_origins, port);
 
+    // Build per-IP rate limiter if configured.
+    let limiter: Arc<Option<RateLimitState>> = Arc::new(
+        state.config.rate_limit_per_second.and_then(|rps| {
+            NonZeroU32::new(rps).map(|n| {
+                let quota = Quota::per_second(n);
+                RateLimitState(Arc::new(RateLimiter::keyed(quota)))
+            })
+        }),
+    );
+
     // Layer order: last added is outermost (first to process requests).
-    // Request flow: cors → host_guard → require_bearer → router
+    // Request flow: cors → host_guard → rate_limit → require_bearer → router
     let app = routes::router(state.clone())
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth::require_bearer,
         ))
+        .layer(middleware::from_fn_with_state(limiter, rate_limit))
         .layer(middleware::from_fn_with_state(state.clone(), host_guard))
         .layer(cors);
 
@@ -35,7 +94,7 @@ pub async fn serve(
     let listener = tokio::net::TcpListener::bind(addr).await?;
     info!(addr = %addr, "API listening");
 
-    axum::serve(listener, app)
+    axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>())
         .with_graceful_shutdown(shutdown)
         .await?;
 
