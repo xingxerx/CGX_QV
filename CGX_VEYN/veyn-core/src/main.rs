@@ -15,7 +15,7 @@ use veyn_adapters::{
 use veyn_schemas::VeynEvent;
 
 use api::state::{AppState, PluginInfo};
-use auth::{ScopedToken, TokenScope};
+use auth::ScopedToken;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -246,7 +246,7 @@ async fn run_serve(config_path: Option<&str>, port: Option<u16>, no_auth: bool) 
 
     // Load or generate the bearer token.
     let token_secret = auth::load_or_create_token(cfg.token_path.as_deref())?;
-    let primary_token = ScopedToken { secret: token_secret, scope: TokenScope::Full };
+    let primary_token = ScopedToken::parse(&token_secret);
     if cfg.require_auth {
         info!("Auth enabled — token path: {:?}", auth::token_path());
     } else {

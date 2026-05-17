@@ -45,9 +45,6 @@ impl TokenScope {
         matches!(self, TokenScope::Full)
     }
 
-    pub fn allows_hid(&self) -> bool {
-        matches!(self, TokenScope::Full)
-    }
 }
 
 /// A token paired with its scope.
@@ -243,6 +240,7 @@ pub async fn require_bearer(State(state): State<AppState>, req: Request, next: N
         let path = path.to_owned();
         let reason = if provided.is_none() { "missing" } else { "invalid" };
         warn!(path = %path, reason, "auth failure");
+        state.prometheus.auth_failures_total.inc();
         append_audit_log(
             state.config.audit_log_path.as_deref(),
             &format!("auth_failure reason={reason} path={path}"),

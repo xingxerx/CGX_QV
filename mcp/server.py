@@ -46,14 +46,14 @@ def _veyn() -> VeynClient:
 
 
 def _qallow_get(path: str, **params: Any) -> Any:
-    with httpx.Client(base_url=QALLOW_URL, timeout=10.0) as c:
+    with httpx.Client(base_url=QALLOW_URL, timeout=30.0) as c:
         r = c.get(path, params={k: v for k, v in params.items() if v is not None})
         r.raise_for_status()
         return r.json()
 
 
 def _qallow_post(path: str, body: Optional[dict] = None) -> Any:
-    with httpx.Client(base_url=QALLOW_URL, timeout=30.0) as c:
+    with httpx.Client(base_url=QALLOW_URL, timeout=300.0) as c:
         r = c.post(path, json=body or {})
         r.raise_for_status()
         return r.json()

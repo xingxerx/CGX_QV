@@ -13,6 +13,13 @@ from typing import Optional, List, Dict, Any, Generator
 from dataclasses import dataclass
 import lmdb
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -29,6 +36,22 @@ class LLMConfig:
     temperature: float = 0.6
     max_tokens: int = 2048
     top_p: float = 0.9
+    timeout: float = 300.0
+
+    def __post_init__(self):
+        if "QALLOW_OLLAMA_MODEL" in os.environ:
+            self.model_name = os.environ["QALLOW_OLLAMA_MODEL"].strip()
+        if "OLLAMA_BASE_URL" in os.environ:
+            url = os.environ["OLLAMA_BASE_URL"].strip().rstrip("/")
+            if not url.endswith("/api"):
+                url += "/api"
+            self.base_url = url
+        if "QALLOW_LLM_TIMEOUT" in os.environ:
+            try:
+                self.timeout = float(os.environ["QALLOW_LLM_TIMEOUT"])
+            except ValueError:
+                pass
+
 
 
 class LLMAdapter:
@@ -46,7 +69,7 @@ class LLMAdapter:
         url = f"{self.config.base_url}/tags"
         try:
             req = urllib.request.Request(url, method="GET")
-            with urllib.request.urlopen(req, timeout=5.0) as resp:
+            with urllib.request.urlopen(req, timeout=10.0) as resp:
                 data = json.loads(resp.read().decode())
                 models = [m["name"] for m in data.get("models", [])]
                 logger.info(f"✓ Verified local Ollama daemon at {self.config.base_url}")
@@ -109,7 +132,7 @@ class LLMAdapter:
         req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
         
         try:
-            with urllib.request.urlopen(req, timeout=120.0) as resp:
+            with urllib.request.urlopen(req, timeout=self.config.timeout) as resp:
                 result = json.loads(resp.read().decode())
                 return result.get("message", {}).get("content", "")
         except Exception as e:
@@ -143,7 +166,7 @@ class LLMAdapter:
         req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
         
         try:
-            with urllib.request.urlopen(req, timeout=120.0) as resp:
+            with urllib.request.urlopen(req, timeout=self.config.timeout) as resp:
                 for line in resp:
                     if line.strip():
                         chunk = json.loads(line.decode("utf-8"))
@@ -168,7 +191,8 @@ class LLMAdapter:
             "base_url": self.config.base_url,
             "temperature": self.config.temperature,
             "max_tokens": self.config.max_tokens,
-            "top_p": self.config.top_p
+            "top_p": self.config.top_p,
+            "timeout": self.config.timeout
         }
 
 

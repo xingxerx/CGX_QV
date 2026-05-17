@@ -24,6 +24,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
+
 import lmdb
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import PlainTextResponse
