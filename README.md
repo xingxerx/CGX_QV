@@ -1,6 +1,8 @@
 # CGX_QV Monorepo
 
-Cognitive AGI runtime and unified signal processing stack — a multi-phase reasoning engine with optional real-time sensor integration, built in a single Rust workspace.
+A sovereign, local-first AGI runtime with a universal signal bus.
+CGX_QV is a monorepo containing two tightly coupled systems: VEYN, a universal signal ingestion and normalization daemon, and Qallow, a stateful multi-phase cognitive reasoning engine backed by a local LLM. Together they form a complete, private, self-optimizing AI infrastructure stack that runs entirely on your hardware.
+No cloud. No accounts. No data leaving your machine.
 
 ---
 
@@ -14,51 +16,29 @@ Cognitive AGI runtime and unified signal processing stack — a multi-phase reas
 
 ---
 
-## How They Connect
-
-```
-Sensors / APIs / Wearables / Custom Sources
-              │
-              ▼
-        VEYN Daemon  (localhost:7700)
-        REST + WebSocket
-              │  (optional)
-              ▼
-           Qallow
-        AGI runtime          ◄──── MCP Server (stdio / SSE)
-        (multi-phase                    │
-        reasoning)              Any MCP-capable host
-                              (Claude Desktop, Cursor,
-                               Zed, Continue, VS Code,
-                               custom agents)
-```
-
-VEYN is an optional data source. When connected, Qallow ingests its WebSocket stream to enrich its internal cognitive state (energy, risk, reward modulation). Qallow runs fully without VEYN using its internal state defaults.
-
-The MCP server sits alongside both daemons and exposes their capabilities as structured tools — any MCP-compatible AI host can query sensor state, control reasoning phases, evolve the swarm, and tune the ASIOS kernel directly.
+VEYN is a universal data bus — a typed, normalized event stream that accepts input from any source (APIs, hardware, files, network, custom adapters) and collapses it into a single schema any downstream system can consume. Signal sources are interchangeable and optional.
+Qallow is not a chatbot wrapper. It is a structured cognitive runtime — a 4-phase C engine managing internal state continuity, a semantic memory graph with cosine-similarity retrieval, a swarm evolution layer, and a self-optimizing parameter kernel (ASIOS) that improves across sessions. The local LLM (Gemma 4 via Ollama) is the final reasoning surface, not the core.
 
 ---
 
 ## Workspace
 
-```
 CGX_QV/
-├── Cargo.toml                        # unified workspace root
+├── Cargo.toml                          # unified Rust workspace root
 ├── CGX_VEYN/
-│   ├── veyn-core/                    # daemon binary + API server
-│   ├── veyn-adapters/                # BLE, EEG-OSC, Health SDK, Mock adapters
-│   ├── veyn-schemas/                 # shared VeynEvent types
-│   ├── veyn-plugins/                 # WASM plugin host
-│   └── sdk/python/                   # Python client SDK (used by MCP server)
+│   ├── veyn-core/                      # daemon binary + Axum API server
+│   ├── veyn-adapters/                  # signal adapters (BLE, OSC, TCP relay, MQTT, Mock)
+│   ├── veyn-schemas/                   # shared VeynEvent / VeynDevice types
+│   ├── veyn-plugins/                   # WASM plugin runtime (wasmtime)
+│   └── sdk/python/                     # Python client SDK
 ├── Qallow/
-│   ├── native_app/                   # FLTK desktop orchestrator
-│   ├── core/qallow-veyn-bridge/      # WebSocket → LMDB signal bridge (optional)
-│   ├── src/                          # C cognitive engine (memory graph, phases 1–4)
-│   └── python/                       # FastAPI server + Ollama + swarm + ASIOS
+│   ├── native_app/                     # FLTK desktop orchestrator (Rust)
+│   ├── core/qallow-veyn-bridge/        # WebSocket → LMDB signal bridge (optional, Rust)
+│   ├── src/                            # C cognitive engine (phases 1–4, memory graph)
+│   └── python/                         # FastAPI server + Ollama + swarm + ASIOS
 └── mcp/
-    ├── server.py                     # MCP server (all tools + resources)
-    └── pyproject.toml                # cgx-qv-mcp package
-```
+    ├── server.py                       # MCP server — all tools + resources
+    └── pyproject.toml                  # cgx-qv-mcp package
 
 ---
 
